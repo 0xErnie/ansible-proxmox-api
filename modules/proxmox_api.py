@@ -39,7 +39,13 @@ options:
     password:
         description:
             - The user's password.
-        required: true
+        required: false
+    token_id:
+        desription:
+            - The user's token id.
+    token_secret:
+        descripion:
+            - The user's token secret.
     verify_ssl:
         description:
             - Verify the hosts SSL certificate. Defaults to True.
@@ -59,6 +65,13 @@ EXAMPLES = '''
     host: proxmox.example.com
     user: admin
     password: secret
+- name: Get properties while authenticating via api token
+  proxmox_api:
+    endpoint: /nodes
+    host: proxmox.example.com
+    user: admin
+    token_id: some_id
+    token_secret: secret_uuid
 - name: Set a virtual machine to boot from hard disk
   proxmox_api:
     endpoint: '/nodes/{{ node }}/qemu/{{ vmid }}/config
@@ -93,17 +106,26 @@ def get_ticket(host, port, user, password, verify_ssl):
         response.raise_for_status()
     return response.json()['data']
 
-def call_api(endpoint, method, host, port, user, password, verify_ssl, parameters):
-    ticket = get_ticket(host, port, user, password, verify_ssl)
+def call_api(endpoint, method, host, port, user, password, token_id, token_secret, verify_ssl, parameters):
+
+    if token_id and token_secret:
+        headers = {
+            'Authorization': 'PVEAPIToken=%s!%s=%s' % (user, token_id, token_secret)
+        }
+
+    else:
+        ticket = get_ticket(host, port, user, password, verify_ssl)
+        headers = {
+            'Cookie': 'PVEAuthCookie=%s' % ticket['ticket'],
+            'CSRFPreventionToken': ticket['CSRFPreventionToken'],
+        }
+
     response = requests.request(
         method.upper(),
         'https://%s:%d/api2/json/%s' % (host, port, endpoint),
         params = parameters if parameters and method.upper() in ['GET'] else None,
         data = parameters if parameters and method.upper() in ['POST', 'PUT'] else None,
-        headers = {
-            'Cookie': 'PVEAuthCookie=%s' % ticket['ticket'],
-            'CSRFPreventionToken': ticket['CSRFPreventionToken'],
-        },
+        headers = headers,
         verify = verify_ssl
     )
     if response.status_code!=200:
@@ -117,7 +139,9 @@ def main():
         host = dict(type='str', required=True),
         port = dict(type='int', required=False, default=8006),
         user = dict(type='str', required=True),
-        password = dict(type='str', required=True, no_log=True),
+        password = dict(type='str', required=False, no_log=True),
+        token_id = dict(type='str', required=False,),
+        token_secret = dict(type='str', required=False, no_log=True),
         verify_ssl = dict(type='bool', required=False, default=True),
         parameters = dict(type='dict', required=False)
     )
@@ -126,6 +150,9 @@ def main():
     )
     module = AnsibleModule(
         argument_spec = module_args,
+        mutually_exclusive=[('password', 'token_id'), ('password', 'token_secret')],
+        required_one_of=[('password', 'token_id')],
+        required_if=[('token_id', 'present', ['token_secret'])],
         supports_check_mode = True
     )
 
@@ -143,6 +170,8 @@ def main():
             module.params.get('port'),
             module.params.get('user'),
             module.params.get('password'),
+            module.params.get('token_id'),
+            module.params.get('token_secret'),
             module.params.get('verify_ssl'),
             module.params.get('parameters')
         )
